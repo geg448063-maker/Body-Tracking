@@ -1,10 +1,35 @@
+import math
+import ctypes
 import sys
-from pathlib import Path
-
+from importlib import import_module
 import cv2
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from pathlib import Path
+
+# we will use elbow angle for pushup detection
+def calculate_angle(shoulder, elbow, wrist):
+    """Calculate angle between upper arm and forearm at the elbow."""
+    # vectors from elbow to shoulder and elbow to wrist
+    v1 = (shoulder.x - elbow.x, shoulder.y - elbow.y)
+    v2 = (wrist.x - elbow.x, wrist.y - elbow.y)
+    
+    # dot product and magnitudes
+    dot = v1[0] * v2[0] + v1[1] * v2[1]
+    mag1 = math.sqrt(v1[0]**2 + v1[1]**2)
+    mag2 = math.sqrt(v2[0]**2 + v2[1]**2)
+    
+    if mag1 == 0 or mag2 == 0:
+        return 0
+    
+    # cosine of angle
+    cos_angle = dot / (mag1 * mag2)
+    cos_angle = max(-1, min(1, cos_angle))  # clamp to [-1, 1]
+    
+    # angle in degrees
+    angle = math.degrees(math.acos(cos_angle))
+    return angle
 
 # download model if not present
 model_path = Path(__file__).parent / "pose_landmarker_lite.task"
@@ -34,17 +59,9 @@ if not cap.isOpened():
 
 frame_count = 0
 
-# states for pushup detection: 0=up,1=down
+# states for pushup detection: 0=up (extended), 1=down (bent)
 state = 0
 count = 0
-
-# we will use nose y-coordinate for simplicity
-def get_nose_y(landmarks):
-    # landmark index 0 = nose
-    return landmarks[0].y if landmarks else None
-
-# initial baseline
-baseline_y = None
 
 def annotate(frame, text):
     cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
@@ -89,19 +106,23 @@ while cap.isOpened():
     frame_count += 1
 
     if results.pose_landmarks:
-        y = get_nose_y(results.pose_landmarks[0])
-        if baseline_y is None:
-            baseline_y = y
-        # threshold: 0.10 of height
-        thresh = baseline_y + 0.10
-        if state == 0 and y > thresh:
+        landmarks = results.pose_landmarks[0]
+        
+        # calculate right arm elbow angle (shoulder 12, elbow 14, wrist 16)
+        shoulder = landmarks[12]
+        elbow = landmarks[14]
+        wrist = landmarks[16]
+        angle = calculate_angle(shoulder, elbow, wrist)
+        
+        # state: 0 = up (extended, angle < 90), 1 = down (bent, angle >= 90)
+        if state == 0 and angle >= 90:
             state = 1
-        elif state == 1 and y <= thresh:
+        elif state == 1 and angle < 90:
             state = 0
             count += 1
 
-        draw_pose(frame, results.pose_landmarks[0], h, w)
-        annotate(frame, f"Pushups: {count}")
+        draw_pose(frame, landmarks, h, w)
+        annotate(frame, f"Pushups: {count} | Angle: {angle:.1f}°")
 
     cv2.imshow("Pushup Counter", frame)
     if cv2.waitKey(1) & 0xFF == ord("q"):
